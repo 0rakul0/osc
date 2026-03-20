@@ -585,7 +585,7 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             color_continuous_scale=["#d8f3dc", "#0f4c5c"],
         )
         fig.update_layout(height=440, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         positive = filtered.loc[filtered["valor_num"].gt(0), "valor_num"].dropna()
         if positive.empty:
@@ -594,14 +594,14 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             hist = pd.DataFrame({"log10_valor": np.log10(positive.clip(lower=1))})
             fig = px.histogram(hist, x="log10_valor", nbins=40, title="Distribuicao dos valores (log10)", color_discrete_sequence=["#e36414"])
             fig.update_layout(height=440, margin=dict(l=10, r=10, t=60, b=10))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
     display = summary.copy()
     for column in ["valor_total", "ticket_medio", "ticket_mediano"]:
         display[column] = display[column].map(format_money)
     for column in ["cobertura_cnpj", "cobertura_municipio", "cobertura_objeto", "cobertura_modalidade"]:
         display[column] = display[column].map(format_pct)
-    st.dataframe(display, width='stretch', hide_index=True)
+    st.dataframe(display, use_container_width=True, hide_index=True)
     st.caption(f"O recorte atual representa {format_pct(len(filtered) / max(len(full_data), 1) * 100)} da base carregada.")
 
 
@@ -622,7 +622,7 @@ def render_temporal(filtered: pd.DataFrame) -> None:
     with left:
         fig = px.line(annual, x="ano_num", y=y_map[metric], markers=True, title=f"Evolucao anual - {metric.lower()}", color_discrete_sequence=["#0f4c5c"])
         fig.update_layout(height=400, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         by_uf_year = filtered.loc[filtered["ano_valido"]].groupby(["uf", "ano_num"])["valor_num"].sum().reset_index()
         if by_uf_year.empty:
@@ -631,7 +631,7 @@ def render_temporal(filtered: pd.DataFrame) -> None:
             heat = by_uf_year.pivot(index="uf", columns="ano_num", values="valor_num")
             fig = px.imshow(heat, aspect="auto", color_continuous_scale=["#fff4e6", "#fb8b24", "#9a031e"], title="Heatmap de valor por UF e ano")
             fig.update_layout(height=400, margin=dict(l=10, r=10, t=60, b=10))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
 
 def render_territory(filtered: pd.DataFrame) -> None:
@@ -646,11 +646,11 @@ def render_territory(filtered: pd.DataFrame) -> None:
     with left:
         fig = px.bar(geo.head(25).sort_values("valor_total"), x="valor_total", y="municipio_base", orientation="h", color="uf", title="Top municipios por valor")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         fig = px.treemap(geo.head(120), path=["uf", "municipio_base"], values="valor_total", color="registros", title="Treemap territorial")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def render_entities(filtered: pd.DataFrame) -> None:
@@ -663,16 +663,16 @@ def render_entities(filtered: pd.DataFrame) -> None:
     with left:
         fig = px.bar(entities.head(20).sort_values("valor_total"), x="valor_total", y="identificador", orientation="h", title="Top entidades por valor", color="valor_total", color_continuous_scale=["#ffd6a5", "#9a031e"])
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         top_rows = entities.sort_values(["registros", "valor_total"], ascending=[False, False]).head(20).sort_values("registros")
         fig = px.bar(top_rows, x="registros", y="identificador", orientation="h", title="Top entidades por quantidade de registros", color="valor_total", color_continuous_scale=["#d8f3dc", "#0f4c5c"])
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     display = entities.head(200).copy()
     display["valor_total"] = display["valor_total"].map(format_money)
     display["ticket_medio"] = display["ticket_medio"].map(format_money)
-    st.dataframe(display[["identificador", "nome_osc", "registros", "valor_total", "ticket_medio", "ufs", "municipios", "primeiro_ano", "ultimo_ano"]], width='stretch', hide_index=True)
+    st.dataframe(display[["identificador", "nome_osc", "registros", "valor_total", "ticket_medio", "ufs", "municipios", "primeiro_ano", "ultimo_ano"]], use_container_width=True, hide_index=True)
 
 
 def render_quality(filtered: pd.DataFrame) -> None:
@@ -688,7 +688,7 @@ def render_quality(filtered: pd.DataFrame) -> None:
         heat = missing.pivot(index="uf", columns="campo", values="faltante_pct")
         fig = px.imshow(heat, aspect="auto", color_continuous_scale=["#eff7f6", "#ffbf69", "#d90429"], title="% de vazio por campo e UF")
         fig.update_layout(height=460, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         alerts = pd.DataFrame(
             {
@@ -707,7 +707,7 @@ def render_quality(filtered: pd.DataFrame) -> None:
         )
         fig = px.bar(alerts.sort_values("quantidade"), x="quantidade", y="indicador", orientation="h", title="Alertas de qualidade", color="quantidade", color_continuous_scale=["#ffe5d9", "#9a031e"])
         fig.update_layout(height=460, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def render_texts(filtered: pd.DataFrame) -> None:
@@ -722,10 +722,10 @@ def render_texts(filtered: pd.DataFrame) -> None:
         else:
             fig = px.bar(freq.sort_values("frequencia"), x="frequencia", y="termo", orientation="h", title="Termos mais frequentes", color="frequencia", color_continuous_scale=["#fff4e6", "#e36414"])
             fig.update_layout(height=500, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
     with right:
         table = filtered[[source_column, "uf", "ano", "valor_total", "nome_osc", "municipio"]].rename(columns={source_column: "texto"}).dropna(subset=["texto"]).head(150)
-        st.dataframe(table, width='stretch', hide_index=True)
+        st.dataframe(table, use_container_width=True, hide_index=True)
 
 
 def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
@@ -749,7 +749,7 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             data=csv_bytes,
             file_name="benchmark_ufs_recorte_atual.csv",
             mime="text/csv",
-            width='stretch',
+            use_container_width=True,
         )
     with download_col2:
         st.download_button(
@@ -757,7 +757,7 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             data=excel_bytes,
             file_name="relatorio_comparativo_ufs.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width='stretch',
+            use_container_width=True,
         )
 
     left, right = st.columns([1.1, 0.9])
@@ -774,7 +774,7 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             log_x=True,
         )
         fig.update_layout(height=430, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     with right:
         fig = px.bar(
             compare.sort_values("valor_total", ascending=False).head(15),
@@ -785,7 +785,7 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             color_continuous_scale=["#eff7f6", "#0f4c5c"],
         )
         fig.update_layout(height=430, margin=dict(l=10, r=10, t=60, b=10))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
     display = benchmark.copy()
     for column in ["valor_total", "ticket_medio", "ticket_mediano"]:
@@ -794,7 +794,7 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
         display[column] = display[column].map(format_pct)
     st.dataframe(
         display[["uf", "rank_valor_total", "rank_registros", "rank_ticket_medio", "rank_concentracao", "valor_total", "registros", "ticket_medio", "ticket_mediano", "share_nacional_pct", "top1_share_pct", "top5_share_pct", "top10_share_pct", "entidades", "cob_municipio", "cob_objeto", "cob_modalidade"]],
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -847,7 +847,7 @@ def render_histories() -> None:
                 data=markdown.encode("utf-8"),
                 file_name=f"{selected}.md",
                 mime="text/markdown",
-                width='stretch',
+                use_container_width=True,
             )
         else:
             st.caption("Clique para navegar na mesma pagina.")
