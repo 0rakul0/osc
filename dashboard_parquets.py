@@ -775,7 +775,8 @@ def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str
     valid_years = sorted(int(v) for v in data.loc[data["ano_valido"], "ano_num"].dropna().unique().tolist())
     year_range = None
     if valid_years:
-        year_range = st.sidebar.slider("Faixa de ano", min(valid_years), max(valid_years), (min(valid_years), max(valid_years)))
+        year_range = st.sidebar.slider("Filtro global de ano", min(valid_years), max(valid_years), (min(valid_years), max(valid_years)))
+    st.sidebar.caption("Esse filtro vale para o dashboard inteiro. O Panorama tem uma comparacao temporal propria.")
     modalities = data["modalidade_base"].value_counts().head(25).index.tolist()
     selected_modalities = st.sidebar.multiselect("Modalidades", modalities, default=[])
     instrument_types = data["tipo_instrumento"].value_counts().index.tolist()
@@ -835,12 +836,15 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
     col6.metric("CNPJs validos", format_int(filtered.loc[filtered["tem_cnpj_valido"], "cnpj"].dropna().nunique()))
 
     valid_years = sorted(int(year) for year in overview_base.loc[overview_base["ano_valido"], "ano_num"].dropna().unique().tolist())
-    mode_col1, mode_col2 = st.columns([0.38, 0.62])
+    st.markdown("**Janela temporal do panorama**")
+    st.caption("Esses controles alteram apenas os comparativos do Panorama. Os cards acima continuam refletindo o recorte global atual.")
+
+    mode_col1, mode_col2 = st.columns([0.32, 0.68])
     with mode_col1:
         overview_mode = st.radio(
-            "Janela temporal do panorama",
+            "Modo de comparacao",
             ["Recorte atual", "Ano isolado", "Faixa acumulada"],
-            horizontal=True,
+            horizontal=False,
             key="overview_time_mode",
         )
 
@@ -849,10 +853,11 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
 
     with mode_col2:
         if overview_mode == "Ano isolado" and valid_years:
-            selected_year = st.selectbox(
-                "Ano do panorama",
-                valid_years,
-                index=len(valid_years) - 1,
+            selected_year = st.slider(
+                "Ano isolado do panorama",
+                min_value=min(valid_years),
+                max_value=max(valid_years),
+                value=max(valid_years),
                 key="overview_single_year",
             )
             comparison_source = overview_base.loc[overview_base["ano_num"].eq(selected_year)].copy()
