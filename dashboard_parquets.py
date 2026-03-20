@@ -859,6 +859,60 @@ def render_temporal(filtered: pd.DataFrame) -> None:
             fig.update_layout(height=400, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig, width="stretch")
 
+    st.markdown("**Corte anual por UF**")
+    st.caption("Este grafico soma `valor_num` por UF no ano escolhido. Ele e o formato mais seguro para comparar estados em um ano especifico.")
+
+    available_years = sorted(int(year) for year in annual["ano_num"].dropna().unique().tolist())
+    default_year = available_years[-1]
+    control_col1, control_col2 = st.columns([0.35, 0.65])
+    with control_col1:
+        selected_year = st.selectbox("Ano para comparar UFs", available_years, index=len(available_years) - 1)
+    with control_col2:
+        top_n = st.slider("Quantidade de UFs no ranking", min_value=5, max_value=min(len(by_uf_year["uf"].unique()), 27), value=min(15, len(by_uf_year["uf"].unique())))
+
+    annual_cut = (
+        filtered.loc[filtered["ano_num"].eq(selected_year)]
+        .groupby("uf", dropna=False)
+        .agg(valor_total=("valor_num", "sum"), registros=("uf", "size"), ticket_medio=("valor_num", "mean"))
+        .reset_index()
+        .sort_values(["valor_total", "registros"], ascending=[False, False])
+    )
+
+    if annual_cut.empty:
+        st.info(f"Nao ha registros para {selected_year} no recorte atual.")
+        return
+
+    top_cut = annual_cut.head(top_n).sort_values("valor_total", ascending=True)
+    fig = px.bar(
+        top_cut,
+        x="valor_total",
+        y="uf",
+        orientation="h",
+        title=f"Valor repassado por UF ({selected_year})",
+        text="valor_total",
+        color="valor_total",
+        color_continuous_scale=["#d8f3dc", "#0f4c5c"],
+    )
+    fig.update_traces(
+        texttemplate="%{text:,.2f}",
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>Valor total: %{x:,.2f}<extra></extra>",
+        cliponaxis=False,
+    )
+    fig.update_layout(
+        height=520,
+        margin=dict(l=10, r=80, t=60, b=10),
+        coloraxis_showscale=False,
+        xaxis_title="Valor total",
+        yaxis_title="UF",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    display = annual_cut.copy()
+    display["valor_total"] = display["valor_total"].map(format_money)
+    display["ticket_medio"] = display["ticket_medio"].map(format_money)
+    st.dataframe(display, width="stretch", hide_index=True)
+
 
 def render_territory(filtered: pd.DataFrame) -> None:
     st.subheader("Territorio")
