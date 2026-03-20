@@ -797,11 +797,7 @@ def render_tab_guide() -> None:
     with col1:
         st.info(
             "**Panorama**\n\n"
-            "Resumo geral do recorte: volume, valor, ticket medio e quadro comparativo por UF."
-        )
-        st.info(
-            "**Temporal**\n\n"
-            "Evolucao por ano, com serie historica e heatmap para ver mudancas de ritmo."
+            "Resumo geral do recorte com tendencia temporal, quadro comparativo por UF e leitura por tipo do instrumento."
         )
         st.info(
             "**Territorio**\n\n"
@@ -839,41 +835,41 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
     st.markdown("**Janela temporal do panorama**")
     st.caption("Esses controles alteram apenas os comparativos do Panorama. Os cards acima continuam refletindo o recorte global atual.")
 
-    mode_col1, mode_col2 = st.columns([0.32, 0.68])
-    with mode_col1:
-        overview_mode = st.radio(
-            "Modo de comparacao",
-            ["Recorte atual", "Ano isolado", "Faixa acumulada"],
-            horizontal=False,
-            key="overview_time_mode",
-        )
+    overview_mode = st.radio(
+        "Modo de comparacao do panorama",
+        ["Faixa acumulada", "Ano isolado", "Recorte atual"],
+        horizontal=True,
+        index=0,
+        key="overview_time_mode",
+    )
 
     comparison_source = filtered
     comparison_label = "recorte atual"
 
-    with mode_col2:
-        if overview_mode == "Ano isolado" and valid_years:
-            selected_year = st.slider(
-                "Ano isolado do panorama",
-                min_value=min(valid_years),
-                max_value=max(valid_years),
-                value=max(valid_years),
-                key="overview_single_year",
-            )
-            comparison_source = overview_base.loc[overview_base["ano_num"].eq(selected_year)].copy()
-            comparison_label = f"ano {selected_year}"
-        elif overview_mode == "Faixa acumulada" and valid_years:
-            selected_range = st.slider(
-                "Faixa acumulada do panorama",
-                min_value=min(valid_years),
-                max_value=max(valid_years),
-                value=(min(valid_years), max(valid_years)),
-                key="overview_year_range",
-            )
-            comparison_source = overview_base.loc[
-                overview_base["ano_num"].between(selected_range[0], selected_range[1], inclusive="both")
-            ].copy()
-            comparison_label = f"acumulado de {selected_range[0]} a {selected_range[1]}"
+    if overview_mode == "Ano isolado" and valid_years:
+        selected_year = st.slider(
+            "Barra temporal do panorama",
+            min_value=min(valid_years),
+            max_value=max(valid_years),
+            value=max(valid_years),
+            key="overview_single_year",
+        )
+        comparison_source = overview_base.loc[overview_base["ano_num"].eq(selected_year)].copy()
+        comparison_label = f"ano {selected_year}"
+    elif overview_mode == "Faixa acumulada" and valid_years:
+        selected_range = st.slider(
+            "Barra temporal do panorama",
+            min_value=min(valid_years),
+            max_value=max(valid_years),
+            value=(min(valid_years), max(valid_years)),
+            key="overview_year_range",
+        )
+        comparison_source = overview_base.loc[
+            overview_base["ano_num"].between(selected_range[0], selected_range[1], inclusive="both")
+        ].copy()
+        comparison_label = f"acumulado de {selected_range[0]} a {selected_range[1]}"
+    else:
+        st.info("A barra temporal do panorama aparece nos modos `Faixa acumulada` e `Ano isolado`.")
 
     summary = build_uf_summary(comparison_source)
     left, right = st.columns([1.2, 0.8])
@@ -898,6 +894,8 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
             fig = px.histogram(hist, x="log10_valor", nbins=40, title="Distribuicao dos valores (log10)", color_discrete_sequence=["#e36414"])
             fig.update_layout(height=440, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig, width="stretch")
+
+    render_temporal_analysis(filtered)
 
     st.markdown("**Leitura por tipo do instrumento**")
     instrument_summary = (
@@ -949,8 +947,8 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
     )
 
 
-def render_temporal(filtered: pd.DataFrame) -> None:
-    st.subheader("Temporal")
+def render_temporal_analysis(filtered: pd.DataFrame) -> None:
+    st.markdown("**Tendencia temporal**")
     annual = (
         filtered.loc[filtered["ano_valido"]]
         .groupby("ano_num")
@@ -958,9 +956,10 @@ def render_temporal(filtered: pd.DataFrame) -> None:
         .reset_index()
     )
     if annual.empty:
-        st.info("Nao ha anos validos no recorte.")
+        st.info("Nao ha anos validos no recorte atual para a leitura temporal.")
         return
-    metric = st.radio("Metrica", ["Valor total", "Registros", "Ticket medio"], horizontal=True)
+    st.caption("Esta secao mostra a tendencia temporal do recorte global atual.")
+    metric = st.radio("Metrica temporal", ["Valor total", "Registros", "Ticket medio"], horizontal=True, key="temporal_metric")
     y_map = {"Valor total": "valor_total", "Registros": "registros", "Ticket medio": "ticket_medio"}
     left, right = st.columns([1.1, 0.9])
     with left:
@@ -1595,13 +1594,11 @@ def main() -> None:
         st.warning("Os filtros atuais nao retornaram registros.")
         return
 
-    sections = ["Panorama", "Temporal", "Territorio", "Entidades", "Auditoria", "Historias"]
+    sections = ["Panorama", "Territorio", "Entidades", "Auditoria", "Historias"]
     selected_section = st.radio("Secao", sections, horizontal=True, label_visibility="collapsed")
 
     if selected_section == "Panorama":
         render_overview(filtered, data, filtered_without_year)
-    elif selected_section == "Temporal":
-        render_temporal(filtered)
     elif selected_section == "Territorio":
         render_territory(filtered)
     elif selected_section == "Entidades":
