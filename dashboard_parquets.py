@@ -78,6 +78,44 @@ def clean_text(series: pd.Series) -> pd.Series:
     return values
 
 
+def derive_instrument_type(data: pd.DataFrame) -> pd.Series:
+    modalidade = data["modalidade"].fillna("").astype("string").str.lower()
+    objeto = data["objeto"].fillna("").astype("string").str.lower()
+    instrument_type = pd.Series("Outros", index=data.index, dtype="string")
+
+    no_info = modalidade.eq("") & objeto.eq("")
+    instrument_type.loc[no_info] = "Nao classificado"
+
+    convenio_mask = modalidade.str.contains("convenio|convênio", regex=True) | objeto.str.contains("convenio|convênio", regex=True)
+    instrument_type.loc[convenio_mask] = "Convenio"
+
+    parceria_mask = (
+        modalidade.str.contains("termo de fomento|termo de colaboracao|termo de colaboração|termo de cooperacao|termo de cooperação|termo de parceria|parceria", regex=True)
+        | objeto.str.contains("termo de fomento|termo de colaboracao|termo de colaboração|termo de cooperacao|termo de cooperação|termo de parceria|parceria", regex=True)
+    )
+    instrument_type.loc[parceria_mask] = "Parceria / termo"
+
+    transferencia_mask = (
+        modalidade.str.contains("transferencia|transferência|repasse|auxilio|auxílio|subvenc|contribui", regex=True)
+        | objeto.str.contains("transferencia|transferência|repasse|auxilio|auxílio|subvenc|contribui", regex=True)
+    )
+    instrument_type.loc[transferencia_mask] = "Transferencia / auxilio"
+
+    licitacao_mask = (
+        modalidade.str.contains("pregao|pregão|concorr|licit|tomada de preco|tomada de preço|dispensa|dispensad|inexig", regex=True)
+        | objeto.str.contains("pregao|pregão|concorr|licit|tomada de preco|tomada de preço|dispensa|inexig", regex=True)
+    )
+    instrument_type.loc[licitacao_mask] = "Licitacao / contratacao"
+
+    status_mask = modalidade.str.contains(
+        "prestacao de contas|prestação de contas|em execucao|em execução|encerrado|vigente|finalizada|formalizada|extinto|rescind|cadastrado|aprovado|lançado|lancado|cancelado",
+        regex=True,
+    )
+    instrument_type.loc[status_mask & instrument_type.isin(["Outros", "Nao classificado"])] = "Status / prestacao de contas"
+
+    return instrument_type.fillna("Outros")
+
+
 def parse_money(value: object) -> float:
     if pd.isna(value):
         return np.nan
@@ -172,6 +210,7 @@ def load_data(data_dir: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     data["entidade_base"] = data["cnpj"].where(data["tem_cnpj_valido"], data["nome_osc"]).fillna("Sem identificacao")
     data["municipio_base"] = data["municipio"].fillna("Nao informado")
     data["modalidade_base"] = data["modalidade"].fillna("Nao informada")
+    data["tipo_instrumento"] = derive_instrument_type(data)
 
     valid_period = data["ano_valido"] & data["mes_valido"]
     data["ano_mes"] = pd.NaT
@@ -421,6 +460,7 @@ def apply_filters(
     selected_ufs: list[str],
     year_range: tuple[int, int] | None,
     selected_modalities: list[str],
+    selected_instrument_types: list[str],
     minimum_value: float,
     only_valid_cnpj: bool,
     exclude_zero_negative: bool,
@@ -433,6 +473,8 @@ def apply_filters(
         filtered = filtered[filtered["ano_num"].between(year_range[0], year_range[1], inclusive="both")]
     if selected_modalities:
         filtered = filtered[filtered["modalidade_base"].isin(selected_modalities)]
+    if selected_instrument_types:
+        filtered = filtered[filtered["tipo_instrumento"].isin(selected_instrument_types)]
     if minimum_value > 0:
         filtered = filtered[filtered["valor_num"].ge(minimum_value)]
     if only_valid_cnpj:
@@ -726,7 +768,7 @@ def render_header(data: pd.DataFrame, files_df: pd.DataFrame, data_dir: str) -> 
     )
 
 
-def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str], tuple[int, int] | None, list[str], float, bool, bool, str]:
+def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str], tuple[int, int] | None, list[str], list[str], float, bool, bool, str]:
     st.sidebar.header("Filtros")
     available_ufs = sorted(data["uf"].dropna().unique().tolist())
     selected_ufs = st.sidebar.multiselect("UFs", available_ufs, default=available_ufs)
@@ -736,13 +778,15 @@ def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str
         year_range = st.sidebar.slider("Faixa de ano", min(valid_years), max(valid_years), (min(valid_years), max(valid_years)))
     modalities = data["modalidade_base"].value_counts().head(25).index.tolist()
     selected_modalities = st.sidebar.multiselect("Modalidades", modalities, default=[])
+    instrument_types = data["tipo_instrumento"].value_counts().index.tolist()
+    selected_instrument_types = st.sidebar.multiselect("Tipo do instrumento", instrument_types, default=[])
     minimum_value = st.sidebar.number_input("Valor minimo", min_value=0.0, value=0.0, step=50000.0)
     only_valid_cnpj = st.sidebar.checkbox("Somente CNPJ valido", value=False)
     exclude_zero_negative = st.sidebar.checkbox("Excluir zero e negativos", value=False)
     search_text = st.sidebar.text_input("Busca textual")
     st.sidebar.divider()
     st.sidebar.caption(f"Arquivos lidos: {format_int(len(files_df))}")
-    return selected_ufs, year_range, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text
+    return selected_ufs, year_range, selected_modalities, selected_instrument_types, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text
 
 
 def render_tab_guide() -> None:
@@ -769,19 +813,11 @@ def render_tab_guide() -> None:
             "Ranking e perfil das OSCs ou beneficiarios com maior peso financeiro ou maior volume de registros."
         )
         st.info(
-            "**Qualidade**\n\n"
-            "Cobertura dos campos e alertas de dados faltantes, anos invalidos, valores negativos e duplicidades aparentes."
-        )
-        st.info(
             "**Auditoria**\n\n"
-            "Painel de revisao por UF, com prioridade de risco, detalhe por estado e trilha de origem quando houver auditoria complementar."
+            "Painel de revisao por UF, com subsecao de qualidade dos dados e subsecao de benchmark entre estados."
         )
 
     with col3:
-        st.info(
-            "**Benchmark UFs**\n\n"
-            "Comparacao entre estados para identificar quem cresce por volume, ticket medio ou concentracao."
-        )
         st.info(
             "**Historias**\n\n"
             "Narrativas corridas por UF, em formato de wiki, com interpretacao analitica e fontes."
@@ -822,6 +858,44 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             fig.update_layout(height=440, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig, width="stretch")
 
+    st.markdown("**Leitura por tipo do instrumento**")
+    instrument_summary = (
+        filtered.groupby("tipo_instrumento", dropna=False)
+        .agg(registros=("tipo_instrumento", "size"), valor_total=("valor_num", "sum"))
+        .reset_index()
+        .sort_values(["valor_total", "registros"], ascending=[False, False])
+    )
+    instrument_summary["share_valor_pct"] = instrument_summary["valor_total"] / max(instrument_summary["valor_total"].sum(), 1) * 100
+
+    left, right = st.columns([1.0, 1.0])
+    with left:
+        fig = px.bar(
+            instrument_summary.sort_values("valor_total", ascending=True),
+            x="valor_total",
+            y="tipo_instrumento",
+            orientation="h",
+            title="Valor total por tipo do instrumento",
+            color="tipo_instrumento",
+        )
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=60, b=10), showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+    with right:
+        fig = px.pie(
+            instrument_summary,
+            names="tipo_instrumento",
+            values="valor_total",
+            title="Participacao no valor total",
+            hole=0.45,
+        )
+        fig.update_traces(textposition="inside", textinfo="percent+label")
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig, width="stretch")
+
+    instrument_display = instrument_summary.copy()
+    instrument_display["valor_total"] = instrument_display["valor_total"].map(format_money)
+    instrument_display["share_valor_pct"] = instrument_display["share_valor_pct"].map(format_pct)
+    st.dataframe(instrument_display, width="stretch", hide_index=True)
+
     display = summary.copy()
     for column in ["valor_total", "ticket_medio", "ticket_mediano"]:
         display[column] = display[column].map(format_money)
@@ -859,6 +933,31 @@ def render_temporal(filtered: pd.DataFrame) -> None:
             fig.update_layout(height=400, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig, width="stretch")
 
+    instrument_year = (
+        filtered.loc[filtered["ano_valido"]]
+        .groupby(["ano_num", "tipo_instrumento"], dropna=False)
+        .agg(valor_total=("valor_num", "sum"), registros=("tipo_instrumento", "size"))
+        .reset_index()
+    )
+    if not instrument_year.empty:
+        st.markdown("**Evolucao por tipo do instrumento**")
+        instrument_metric = st.radio(
+            "Leitura por tipo",
+            ["Valor total por tipo", "Registros por tipo"],
+            horizontal=True,
+            key="temporal_instrument_metric",
+        )
+        instrument_y = "valor_total" if instrument_metric == "Valor total por tipo" else "registros"
+        fig = px.area(
+            instrument_year,
+            x="ano_num",
+            y=instrument_y,
+            color="tipo_instrumento",
+            title=f"Evolucao anual por tipo do instrumento - {instrument_metric.lower()}",
+        )
+        fig.update_layout(height=430, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig, width="stretch")
+
     st.markdown("**Corte anual por UF**")
     st.caption("Este grafico soma `valor_num` por UF no ano escolhido. Ele e o formato mais seguro para comparar estados em um ano especifico.")
 
@@ -882,31 +981,57 @@ def render_temporal(filtered: pd.DataFrame) -> None:
         st.info(f"Nao ha registros para {selected_year} no recorte atual.")
         return
 
-    top_cut = annual_cut.head(top_n).sort_values("valor_total", ascending=True)
-    fig = px.bar(
-        top_cut,
-        x="valor_total",
-        y="uf",
-        orientation="h",
-        title=f"Valor repassado por UF ({selected_year})",
-        text="valor_total",
-        color="valor_total",
-        color_continuous_scale=["#d8f3dc", "#0f4c5c"],
+    annual_type_cut = (
+        filtered.loc[filtered["ano_num"].eq(selected_year)]
+        .groupby(["uf", "tipo_instrumento"], dropna=False)
+        .agg(valor_total=("valor_num", "sum"))
+        .reset_index()
     )
-    fig.update_traces(
-        texttemplate="%{text:,.2f}",
-        textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Valor total: %{x:,.2f}<extra></extra>",
-        cliponaxis=False,
-    )
-    fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=80, t=60, b=10),
-        coloraxis_showscale=False,
-        xaxis_title="Valor total",
-        yaxis_title="UF",
-    )
-    st.plotly_chart(fig, width="stretch")
+
+    cut_left, cut_right = st.columns([1.0, 1.0])
+    with cut_left:
+        top_cut = annual_cut.head(top_n).sort_values("valor_total", ascending=True)
+        fig = px.bar(
+            top_cut,
+            x="valor_total",
+            y="uf",
+            orientation="h",
+            title=f"Valor repassado por UF ({selected_year})",
+            text="valor_total",
+            color="valor_total",
+            color_continuous_scale=["#d8f3dc", "#0f4c5c"],
+        )
+        fig.update_traces(
+            texttemplate="%{text:,.2f}",
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Valor total: %{x:,.2f}<extra></extra>",
+            cliponaxis=False,
+        )
+        fig.update_layout(
+            height=520,
+            margin=dict(l=10, r=80, t=60, b=10),
+            coloraxis_showscale=False,
+            xaxis_title="Valor total",
+            yaxis_title="UF",
+        )
+        st.plotly_chart(fig, width="stretch")
+    with cut_right:
+        annual_type_top = (
+            annual_type_cut.groupby("uf", dropna=False)["valor_total"].sum().reset_index()
+            .sort_values("valor_total", ascending=False)
+            .head(top_n)["uf"]
+            .tolist()
+        )
+        type_plot = annual_type_cut.loc[annual_type_cut["uf"].isin(annual_type_top)].copy()
+        fig = px.bar(
+            type_plot,
+            x="uf",
+            y="valor_total",
+            color="tipo_instrumento",
+            title=f"Composicao por tipo do instrumento ({selected_year})",
+        )
+        fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10), xaxis_title="UF", yaxis_title="Valor total")
+        st.plotly_chart(fig, width="stretch")
 
     display = annual_cut.copy()
     display["valor_total"] = display["valor_total"].map(format_money)
@@ -992,6 +1117,23 @@ def render_quality(filtered: pd.DataFrame) -> None:
 
 def render_audit(filtered: pd.DataFrame, full_data: pd.DataFrame, data_dir: str) -> None:
     st.subheader("Auditoria")
+    subsection = st.radio(
+        "Subsecao de auditoria",
+        ["Painel", "Qualidade", "Benchmark UFs"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if subsection == "Qualidade":
+        st.caption("Cobertura dos campos e alertas de dados faltantes, anos invalidos, valores negativos e duplicidades aparentes.")
+        render_quality(filtered)
+        return
+
+    if subsection == "Benchmark UFs":
+        st.caption("Comparacao entre estados para identificar quem cresce por volume, ticket medio ou concentracao.")
+        render_benchmark(filtered, full_data)
+        return
+
     st.caption("A melhor estrategia e ler a auditoria em duas camadas: primeiro o painel nacional de riscos, depois o detalhe da UF com colunas vazias, anos suspeitos e trilha de origem.")
 
     scope = st.radio("Escopo da auditoria", ["Base completa", "Recorte atual"], horizontal=True)
@@ -1369,12 +1511,13 @@ def main() -> None:
         return
 
     render_header(data, files_df, data_dir)
-    selected_ufs, year_range, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text = render_sidebar(data, files_df)
+    selected_ufs, year_range, selected_modalities, selected_instrument_types, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text = render_sidebar(data, files_df)
     filtered = apply_filters(
         data,
         selected_ufs,
         year_range,
         selected_modalities,
+        selected_instrument_types,
         minimum_value,
         only_valid_cnpj,
         exclude_zero_negative,
@@ -1397,7 +1540,7 @@ def main() -> None:
         st.warning("Os filtros atuais nao retornaram registros.")
         return
 
-    sections = ["Panorama", "Temporal", "Territorio", "Entidades", "Qualidade", "Auditoria", "Benchmark UFs", "Historias"]
+    sections = ["Panorama", "Temporal", "Territorio", "Entidades", "Auditoria", "Historias"]
     selected_section = st.radio("Secao", sections, horizontal=True, label_visibility="collapsed")
 
     if selected_section == "Panorama":
@@ -1408,12 +1551,8 @@ def main() -> None:
         render_territory(filtered)
     elif selected_section == "Entidades":
         render_entities(filtered)
-    elif selected_section == "Qualidade":
-        render_quality(filtered)
     elif selected_section == "Auditoria":
         render_audit(filtered, data, data_dir)
-    elif selected_section == "Benchmark UFs":
-        render_benchmark(filtered, data)
     elif selected_section == "Historias":
         render_histories()
 
