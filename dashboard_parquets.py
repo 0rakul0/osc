@@ -202,6 +202,32 @@ def load_history_documents(history_dir: str) -> dict[str, str]:
     return docs
 
 
+def history_anchor_id(markdown_text: str, fallback_key: str) -> str:
+    first_line = next((line.strip() for line in markdown_text.splitlines() if line.strip().startswith("#")), fallback_key)
+    title = re.sub(r"^#+\s*", "", first_line).strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", title).strip("-")
+    return slug or fallback_key.lower()
+
+
+def split_history_markdown(markdown_text: str, fallback_key: str) -> tuple[str, str]:
+    lines = markdown_text.splitlines()
+    title_line = next((line for line in lines if line.strip().startswith("#")), f"# {fallback_key}")
+    title = re.sub(r"^#+\s*", "", title_line).strip()
+    title_index = lines.index(title_line) if title_line in lines else 0
+    body = "\n".join(lines[title_index + 1:]).strip()
+    return title, body
+
+
+def history_display_label(markdown_text: str, fallback_key: str) -> str:
+    title, _ = split_history_markdown(markdown_text, fallback_key)
+    match = re.match(r"^(.*?)\s*\(([A-Z]{2})\)\s*$", title)
+    if match:
+        state_name = match.group(1).strip()
+        uf = match.group(2).strip()
+        return f"{uf} - {state_name}"
+    return fallback_key
+
+
 def apply_filters(
     data: pd.DataFrame,
     selected_ufs: list[str],
@@ -781,19 +807,41 @@ def render_histories() -> None:
         return
 
     ordered_keys = [key for key in sorted(docs.keys()) if key != "INDEX"]
-    mode = st.radio("Modo de leitura", ["Uma historia", "Todas em sequencia"], horizontal=True)
+    anchors = {key: history_anchor_id(docs[key], key) for key in ordered_keys}
+    labels = {key: history_display_label(docs[key], key) for key in ordered_keys}
+    st.markdown(
+        """
+        <style>
+        .history-nav {
+            position: sticky;
+            top: 1rem;
+            max-height: calc(100vh - 3rem);
+            overflow-y: auto;
+            padding: 0.9rem 1rem;
+            border: 1px solid rgba(15,76,92,0.10);
+            border-radius: 16px;
+            background: rgba(255,255,255,0.92);
+        }
+        .history-nav h4 {
+            margin: 0 0 0.75rem 0;
+            font-size: 1rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if "INDEX" in docs:
-        with st.expander("Indice das historias", expanded=False):
-            st.markdown(docs["INDEX"])
+    nav_col, content_col = st.columns([0.28, 0.72], gap="large")
 
-    if mode == "Uma historia":
-        selected = st.selectbox("Escolha a UF", ordered_keys, index=0)
-        markdown = docs.get(selected, "")
-        download_col1, download_col2 = st.columns([0.72, 0.28])
-        with download_col1:
-            st.caption(f"Lendo `{selected}.md` da pasta `historia/`.")
-        with download_col2:
+    with nav_col:
+        st.markdown('<div class="history-nav">', unsafe_allow_html=True)
+        st.markdown("#### Navegacao")
+        mode = st.radio("Visao", ["Corrido", "Selecionar UF"], label_visibility="collapsed")
+        if mode == "Selecionar UF":
+            label_options = [labels[key] for key in ordered_keys]
+            selected_label = st.selectbox("Escolha a UF", label_options, index=0, label_visibility="collapsed")
+            selected = next(key for key in ordered_keys if labels[key] == selected_label)
+            markdown = docs.get(selected, "")
             st.download_button(
                 "Baixar markdown",
                 data=markdown.encode("utf-8"),
@@ -801,12 +849,29 @@ def render_histories() -> None:
                 mime="text/markdown",
                 width='stretch',
             )
-        st.markdown(markdown)
-    else:
-        st.caption("Leitura encadeada das historias por UF, em formato de wiki sequencial.")
-        for key in ordered_keys:
-            st.markdown(docs[key])
-            st.divider()
+        else:
+            st.caption("Clique para navegar na mesma pagina.")
+            summary_links = "\n".join(f"- [{labels[key]}](#{anchors[key]})" for key in ordered_keys)
+            st.markdown(summary_links)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with content_col:
+        if mode == "Selecionar UF":
+            markdown = docs.get(selected, "")
+            title, body = split_history_markdown(markdown, selected)
+            st.caption(f"Lendo `{selected}.md` da pasta `historia/`.")
+            st.header(title, anchor=anchors[selected])
+            if body:
+                st.markdown(body)
+        else:
+            st.caption("Leitura encadeada em formato corrido, como uma wiki sequencial por UF.")
+            st.header("Sumario", anchor="sumario")
+            for key in ordered_keys:
+                title, body = split_history_markdown(docs[key], key)
+                st.header(title, anchor=anchors[key])
+                if body:
+                    st.markdown(body)
+                st.markdown("[Voltar ao sumario](#sumario)")
 
 
 def main() -> None:
