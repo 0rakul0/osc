@@ -1343,22 +1343,24 @@ def main() -> None:
         st.warning("Os filtros atuais nao retornaram registros.")
         return
 
-    tabs = st.tabs(["Panorama", "Temporal", "Territorio", "Entidades", "Qualidade", "Auditoria", "Benchmark UFs", "Historias"])
-    with tabs[0]:
+    sections = ["Panorama", "Temporal", "Territorio", "Entidades", "Qualidade", "Auditoria", "Benchmark UFs", "Historias"]
+    selected_section = st.radio("Secao", sections, horizontal=True, label_visibility="collapsed")
+
+    if selected_section == "Panorama":
         render_overview(filtered, data)
-    with tabs[1]:
+    elif selected_section == "Temporal":
         render_temporal(filtered)
-    with tabs[2]:
+    elif selected_section == "Territorio":
         render_territory(filtered)
-    with tabs[3]:
+    elif selected_section == "Entidades":
         render_entities(filtered)
-    with tabs[4]:
+    elif selected_section == "Qualidade":
         render_quality(filtered)
-    with tabs[5]:
+    elif selected_section == "Auditoria":
         render_audit(filtered, data, data_dir)
-    with tabs[6]:
+    elif selected_section == "Benchmark UFs":
         render_benchmark(filtered, data)
-    with tabs[7]:
+    elif selected_section == "Historias":
         render_histories()
 
 
