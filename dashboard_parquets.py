@@ -15,6 +15,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = BASE_DIR / "processada"
 HISTORY_DIR = BASE_DIR / "historia"
+AUDIT_REPORT_PATH = BASE_DIR / "auditoria_processada.xlsx"
 STANDARD_COLUMNS = [
     "uf",
     "ano",
@@ -202,6 +203,67 @@ def load_history_documents(history_dir: str) -> dict[str, str]:
     return docs
 
 
+@st.cache_data(show_spinner=False)
+def load_audit_summary_sheet(audit_path: str) -> pd.DataFrame:
+    path = Path(audit_path)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path, sheet_name="Resumo")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_audit_sheet_names(audit_path: str) -> list[str]:
+    path = Path(audit_path)
+    if not path.exists():
+        return []
+    try:
+        return pd.ExcelFile(path).sheet_names
+    except Exception:
+        return []
+
+
+def resolve_audit_sheet_name(uf: str, audit_path: str) -> str | None:
+    suffix = f" - {uf}"
+    return next((name for name in load_audit_sheet_names(audit_path) if name.endswith(suffix)), None)
+
+
+@st.cache_data(show_spinner=False)
+def load_audit_sheet_detail(audit_path: str, sheet_name: str) -> dict[str, pd.DataFrame]:
+    path = Path(audit_path)
+    if not path.exists() or not sheet_name:
+        return {}
+
+    try:
+        df = pd.read_excel(path, sheet_name=sheet_name)
+    except Exception:
+        return {}
+
+    def section(start: int, end: int, columns: list[str]) -> pd.DataFrame:
+        chunk = df.iloc[:, start:end].copy()
+        chunk.columns = columns
+        chunk = chunk.dropna(how="all")
+        if chunk.empty:
+            return chunk
+        first_col = columns[0]
+        chunk = chunk[chunk[first_col].notna()].copy()
+        for column in chunk.columns:
+            if chunk[column].dtype == "object":
+                chunk[column] = chunk[column].astype("string").str.strip()
+        return chunk.reset_index(drop=True)
+
+    return {
+        "metrics": section(0, 2, ["metrica", "valor"]),
+        "years": section(4, 6, ["ano", "quantidade"]),
+        "empty_columns": section(8, 9, ["coluna_sem_dados"]),
+        "missing_cnpj_examples": section(11, 12, ["exemplo_nome_osc_sem_cnpj"]),
+        "source_files": section(14, 15, ["arquivo_bruto"]),
+        "mapping": section(16, 19, ["campo_schema", "origem_bruta", "regra"]),
+    }
+
+
 def history_anchor_id(markdown_text: str, fallback_key: str) -> str:
     first_line = next((line.strip() for line in markdown_text.splitlines() if line.strip().startswith("#")), fallback_key)
     title = re.sub(r"^#+\s*", "", first_line).strip().lower()
@@ -226,6 +288,132 @@ def history_display_label(markdown_text: str, fallback_key: str) -> str:
         uf = match.group(2).strip()
         return f"{uf} - {state_name}"
     return fallback_key
+
+
+def build_runtime_audit_summary(data: pd.DataFrame) -> pd.DataFrame:
+    if data.empty:
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    for uf, frame in data.groupby("uf", dropna=False):
+        invalid_year_mask = frame["ano"].notna() & ~frame["ano_valido"]
+        invalid_month_mask = frame["mes"].notna() & ~frame["mes_valido"]
+        invalid_cnpj_mask = frame["cnpj"].notna() & ~frame["tem_cnpj_valido"]
+        empty_columns = [
+            column
+            for column in STANDARD_COLUMNS
+            if column != "uf" and frame[column].notna().sum() == 0
+        ]
+        completeness_components = [
+            frame["ano"].notna().mean(),
+            frame["tem_cnpj_valido"].mean(),
+            frame["tem_municipio"].mean(),
+            frame["tem_objeto"].mean(),
+            frame["tem_modalidade"].mean(),
+            frame["data_inicio"].notna().mean(),
+            frame["data_fim"].notna().mean(),
+        ]
+        rows.append(
+            {
+                "uf": uf,
+                "registros": len(frame),
+                "valor_total": float(frame["valor_num"].sum()),
+                "valor_zero": int(frame["valor_zero"].sum()),
+                "valor_negativo": int(frame["valor_negativo"].sum()),
+                "linhas_sem_ano": int(frame["ano"].isna().sum()),
+                "anos_invalidos": int(invalid_year_mask.sum()),
+                "meses_invalidos": int(invalid_month_mask.sum()),
+                "cnpj_invalidos": int(invalid_cnpj_mask.sum()),
+                "sem_municipio": int((~frame["tem_municipio"]).sum()),
+                "sem_objeto": int((~frame["tem_objeto"]).sum()),
+                "sem_modalidade": int((~frame["tem_modalidade"]).sum()),
+                "duplicados_aparentes": int(frame["duplicado_aparente"].sum()),
+                "colunas_sem_dados_qtd": len(empty_columns),
+                "colunas_sem_dados_lista": ", ".join(empty_columns) if empty_columns else "(nenhuma)",
+                "completude_pct": float(np.mean(completeness_components) * 100),
+            }
+        )
+
+    summary = pd.DataFrame(rows)
+    summary["indice_alerta"] = (
+        (summary["valor_negativo"] > 0).astype(int) * 4
+        + (summary["anos_invalidos"] > 0).astype(int) * 3
+        + (summary["linhas_sem_ano"] > 0).astype(int) * 2
+        + (summary["meses_invalidos"] > 0).astype(int) * 2
+        + (summary["cnpj_invalidos"] > 0).astype(int) * 2
+        + (summary["colunas_sem_dados_qtd"] > 0).astype(int) * 2
+        + (summary["sem_objeto"] > 0).astype(int)
+        + (summary["sem_municipio"] > 0).astype(int)
+        + (summary["sem_modalidade"] > 0).astype(int)
+        + (summary["duplicados_aparentes"] > 0).astype(int)
+        + (summary["valor_zero"] > 0).astype(int)
+    )
+    return summary.sort_values(["indice_alerta", "registros"], ascending=[False, False]).reset_index(drop=True)
+
+
+def build_year_distribution(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["ano", "quantidade"])
+
+    years = frame["ano"].astype("string").str.strip()
+    years = years.fillna("(sem ano)")
+    years = years.replace({"<NA>": "(sem ano)"})
+    years = years.str.replace(r"\.0+$", "", regex=True)
+    counts = years.value_counts(dropna=False).rename_axis("ano").reset_index(name="quantidade")
+    return counts.sort_values("ano").reset_index(drop=True)
+
+
+def build_missing_cnpj_examples_runtime(frame: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["exemplo_nome_osc_sem_cnpj"])
+
+    examples = (
+        frame.loc[frame["cnpj"].isna(), "nome_osc"]
+        .dropna()
+        .astype("string")
+        .str.strip()
+        .replace({"": pd.NA})
+        .dropna()
+        .drop_duplicates()
+        .head(limit)
+        .tolist()
+    )
+    if not examples:
+        examples = ["(nenhum)"]
+    return pd.DataFrame({"exemplo_nome_osc_sem_cnpj": examples})
+
+
+def build_field_completeness(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["campo", "preenchidos", "faltantes", "cobertura_pct"])
+
+    rows: list[dict[str, object]] = []
+    total = len(frame)
+    for column in STANDARD_COLUMNS:
+        filled = int(frame[column].notna().sum())
+        rows.append(
+            {
+                "campo": column,
+                "preenchidos": filled,
+                "faltantes": total - filled,
+                "cobertura_pct": (filled / total * 100) if total else 0,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["cobertura_pct", "campo"], ascending=[True, True]).reset_index(drop=True)
+
+
+def build_invalid_year_examples(frame: pd.DataFrame, limit: int = 10) -> str:
+    values = (
+        frame.loc[frame["ano"].notna() & ~frame["ano_valido"], "ano"]
+        .astype("string")
+        .str.strip()
+        .replace({"": pd.NA})
+        .dropna()
+        .drop_duplicates()
+        .head(limit)
+        .tolist()
+    )
+    return ", ".join(values) if values else "(nenhum)"
 
 
 def apply_filters(
@@ -557,6 +745,49 @@ def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str
     return selected_ufs, year_range, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text
 
 
+def render_tab_guide() -> None:
+    st.markdown("**Guia das abas**")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.info(
+            "**Panorama**\n\n"
+            "Resumo geral do recorte: volume, valor, ticket medio e quadro comparativo por UF."
+        )
+        st.info(
+            "**Temporal**\n\n"
+            "Evolucao por ano, com serie historica e heatmap para ver mudancas de ritmo."
+        )
+        st.info(
+            "**Territorio**\n\n"
+            "Distribuicao territorial dos recursos por UF e municipio."
+        )
+
+    with col2:
+        st.info(
+            "**Entidades**\n\n"
+            "Ranking e perfil das OSCs ou beneficiarios com maior peso financeiro ou maior volume de registros."
+        )
+        st.info(
+            "**Qualidade**\n\n"
+            "Cobertura dos campos e alertas de dados faltantes, anos invalidos, valores negativos e duplicidades aparentes."
+        )
+        st.info(
+            "**Auditoria**\n\n"
+            "Painel de revisao por UF, com prioridade de risco, detalhe por estado e trilha de origem quando houver auditoria complementar."
+        )
+
+    with col3:
+        st.info(
+            "**Benchmark UFs**\n\n"
+            "Comparacao entre estados para identificar quem cresce por volume, ticket medio ou concentracao."
+        )
+        st.info(
+            "**Historias**\n\n"
+            "Narrativas corridas por UF, em formato de wiki, com interpretacao analitica e fontes."
+        )
+
+
 def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
     st.subheader("Panorama")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -705,22 +936,228 @@ def render_quality(filtered: pd.DataFrame) -> None:
         st.plotly_chart(fig, width="stretch")
 
 
-def render_texts(filtered: pd.DataFrame) -> None:
-    st.subheader("Textos")
-    source_label = st.selectbox("Campo textual", ["Objeto", "Nome da OSC", "Modalidade", "Municipio"])
-    source_column = {"Objeto": "objeto", "Nome da OSC": "nome_osc", "Modalidade": "modalidade", "Municipio": "municipio"}[source_label]
-    left, right = st.columns([0.8, 1.2])
+def render_audit(filtered: pd.DataFrame, full_data: pd.DataFrame, data_dir: str) -> None:
+    st.subheader("Auditoria")
+    st.caption("A melhor estrategia e ler a auditoria em duas camadas: primeiro o painel nacional de riscos, depois o detalhe da UF com colunas vazias, anos suspeitos e trilha de origem.")
+
+    scope = st.radio("Escopo da auditoria", ["Base completa", "Recorte atual"], horizontal=True)
+    audit_data = full_data if scope == "Base completa" else filtered
+    summary = build_runtime_audit_summary(audit_data)
+    if summary.empty:
+        st.info("Sem dados para auditoria.")
+        return
+
+    audit_available = AUDIT_REPORT_PATH.exists()
+    audit_summary_sheet = load_audit_summary_sheet(str(AUDIT_REPORT_PATH)) if audit_available else pd.DataFrame()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("UFs auditadas", format_int(summary["uf"].nunique()))
+    col2.metric("Registros auditados", format_int(summary["registros"].sum()))
+    col3.metric("UFs com anos suspeitos", format_int((summary["anos_invalidos"] > 0).sum()))
+    col4.metric("UFs com colunas vazias", format_int((summary["colunas_sem_dados_qtd"] > 0).sum()))
+    col5.metric("UFs com valor zero/negativo", format_int(((summary["valor_zero"] + summary["valor_negativo"]) > 0).sum()))
+
+    left, right = st.columns([1.1, 0.9])
     with left:
-        freq = build_word_frequency(filtered[source_column], top_n=25)
-        if freq.empty:
-            st.info("Sem termos suficientes.")
-        else:
-            fig = px.bar(freq.sort_values("frequencia"), x="frequencia", y="termo", orientation="h", title="Termos mais frequentes", color="frequencia", color_continuous_scale=["#fff4e6", "#e36414"])
-            fig.update_layout(height=500, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
-            st.plotly_chart(fig, width="stretch")
+        heat_source = summary[
+            [
+                "uf",
+                "linhas_sem_ano",
+                "anos_invalidos",
+                "meses_invalidos",
+                "cnpj_invalidos",
+                "sem_municipio",
+                "sem_objeto",
+                "sem_modalidade",
+                "valor_zero",
+                "valor_negativo",
+                "duplicados_aparentes",
+                "colunas_sem_dados_qtd",
+            ]
+        ].copy()
+        heat_source = heat_source.rename(
+            columns={
+                "linhas_sem_ano": "sem_ano",
+                "anos_invalidos": "ano_invalido",
+                "meses_invalidos": "mes_invalido",
+                "cnpj_invalidos": "cnpj_invalido",
+                "sem_municipio": "sem_municipio",
+                "sem_objeto": "sem_objeto",
+                "sem_modalidade": "sem_modalidade",
+                "valor_zero": "valor_zero",
+                "valor_negativo": "valor_negativo",
+                "duplicados_aparentes": "duplicado",
+                "colunas_sem_dados_qtd": "colunas_vazias",
+            }
+        )
+        heat = heat_source.set_index("uf")
+        fig = px.imshow(heat, aspect="auto", color_continuous_scale=["#eff7f6", "#ffbf69", "#9a031e"], title="Mapa de alertas por UF")
+        fig.update_layout(height=470, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig, width="stretch")
     with right:
-        table = filtered[[source_column, "uf", "ano", "valor_total", "nome_osc", "municipio"]].rename(columns={source_column: "texto"}).dropna(subset=["texto"]).head(150)
-        st.dataframe(table, width="stretch", hide_index=True)
+        fig = px.scatter(
+            summary,
+            x="linhas_sem_ano",
+            y="colunas_sem_dados_qtd",
+            size="registros",
+            color="indice_alerta",
+            hover_name="uf",
+            custom_data=["anos_invalidos", "valor_zero", "valor_negativo", "sem_objeto"],
+            title="Prioridade de revisao por UF",
+            color_continuous_scale=["#d8f3dc", "#e36414", "#9a031e"],
+        )
+        fig.update_traces(
+            hovertemplate=(
+                "<b>%{hovertext}</b><br>"
+                + "Linhas sem ano: %{x}<br>"
+                + "Colunas vazias: %{y}<br>"
+                + "Anos invalidos: %{customdata[0]}<br>"
+                + "Valores zero: %{customdata[1]}<br>"
+                + "Valores negativos: %{customdata[2]}<br>"
+                + "Sem objeto: %{customdata[3]}<extra></extra>"
+            )
+        )
+        fig.update_layout(height=470, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig, width="stretch")
+
+    display = summary.copy()
+    display["valor_total"] = display["valor_total"].map(format_money)
+    display["completude_pct"] = display["completude_pct"].map(format_pct)
+    st.dataframe(
+        display[
+            [
+                "uf",
+                "indice_alerta",
+                "registros",
+                "valor_total",
+                "completude_pct",
+                "linhas_sem_ano",
+                "anos_invalidos",
+                "meses_invalidos",
+                "cnpj_invalidos",
+                "valor_zero",
+                "valor_negativo",
+                "sem_municipio",
+                "sem_objeto",
+                "sem_modalidade",
+                "duplicados_aparentes",
+                "colunas_sem_dados_qtd",
+                "colunas_sem_dados_lista",
+            ]
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("**Detalhe por UF**")
+    ordered_ufs = summary.sort_values(["indice_alerta", "registros"], ascending=[False, False])["uf"].tolist()
+    selected_uf = st.selectbox("Escolha a UF para investigar", ordered_ufs, index=0)
+    state_frame = audit_data.loc[audit_data["uf"] == selected_uf].copy()
+    state_row = summary.loc[summary["uf"] == selected_uf].iloc[0]
+    parquet_path = Path(data_dir) / f"{selected_uf}.parquet"
+
+    audit_detail: dict[str, pd.DataFrame] = {}
+    sheet_name = resolve_audit_sheet_name(selected_uf, str(AUDIT_REPORT_PATH)) if audit_available else None
+    if sheet_name:
+        audit_detail = load_audit_sheet_detail(str(AUDIT_REPORT_PATH), sheet_name)
+
+    top1, top2, top3, top4 = st.columns(4)
+    top1.metric("Registros", format_int(state_row["registros"]))
+    top2.metric("Completude", format_pct(state_row["completude_pct"]))
+    top3.metric("Indice de alerta", format_int(state_row["indice_alerta"]))
+    top4.metric("Valor zero/negativo", format_int(state_row["valor_zero"] + state_row["valor_negativo"]))
+
+    summary_text = [
+        f"Fonte principal desta UF: `{parquet_path}`.",
+        f"O estado tem {format_int(state_row['registros'])} registros, valor agregado de {format_money(state_row['valor_total'])} e completude media de {format_pct(state_row['completude_pct'])}.",
+        f"Os principais alertas sao: {format_int(state_row['linhas_sem_ano'])} linhas sem ano, {format_int(state_row['anos_invalidos'])} anos invalidos, {format_int(state_row['cnpj_invalidos'])} CNPJs invalidos e {format_int(state_row['colunas_sem_dados_qtd'])} colunas totalmente vazias.",
+        f"Exemplos de anos suspeitos: {build_invalid_year_examples(state_frame)}.",
+    ]
+    if audit_available and not audit_summary_sheet.empty:
+        summary_text.append(f"Fonte complementar da auditoria: `{AUDIT_REPORT_PATH}`.")
+    st.info("\n\n".join(summary_text))
+
+    detail_tabs = st.tabs(["Alertas", "Anos", "Campos", "Origem"])
+    with detail_tabs[0]:
+        alert_table = pd.DataFrame(
+            {
+                "indicador": [
+                    "linhas_sem_ano",
+                    "anos_invalidos",
+                    "meses_invalidos",
+                    "cnpj_invalidos",
+                    "valor_zero",
+                    "valor_negativo",
+                    "sem_municipio",
+                    "sem_objeto",
+                    "sem_modalidade",
+                    "duplicados_aparentes",
+                ],
+                "quantidade": [
+                    int(state_row["linhas_sem_ano"]),
+                    int(state_row["anos_invalidos"]),
+                    int(state_row["meses_invalidos"]),
+                    int(state_row["cnpj_invalidos"]),
+                    int(state_row["valor_zero"]),
+                    int(state_row["valor_negativo"]),
+                    int(state_row["sem_municipio"]),
+                    int(state_row["sem_objeto"]),
+                    int(state_row["sem_modalidade"]),
+                    int(state_row["duplicados_aparentes"]),
+                ],
+            }
+        )
+        fig = px.bar(alert_table.sort_values("quantidade"), x="quantidade", y="indicador", orientation="h", title=f"Alertas da UF {selected_uf}", color="quantidade", color_continuous_scale=["#ffe5d9", "#9a031e"])
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=60, b=10), coloraxis_showscale=False)
+        st.plotly_chart(fig, width="stretch")
+
+        examples = audit_detail.get("missing_cnpj_examples", pd.DataFrame())
+        if examples.empty:
+            examples = build_missing_cnpj_examples_runtime(state_frame)
+        st.dataframe(examples, width="stretch", hide_index=True)
+
+    with detail_tabs[1]:
+        years = audit_detail.get("years", pd.DataFrame())
+        if years.empty:
+            years = build_year_distribution(state_frame)
+        st.dataframe(years, width="stretch", hide_index=True)
+
+    with detail_tabs[2]:
+        completeness = build_field_completeness(state_frame)
+        completeness["cobertura_pct"] = completeness["cobertura_pct"].map(format_pct)
+        st.dataframe(completeness, width="stretch", hide_index=True)
+
+        empty_columns = audit_detail.get("empty_columns", pd.DataFrame())
+        if empty_columns.empty:
+            empty_columns = pd.DataFrame({"coluna_sem_dados": state_row["colunas_sem_dados_lista"].split(", ")})
+        st.caption("Colunas totalmente vazias")
+        st.dataframe(empty_columns, width="stretch", hide_index=True)
+
+    with detail_tabs[3]:
+        if audit_available:
+            st.download_button(
+                "Baixar auditoria_processada.xlsx",
+                data=AUDIT_REPORT_PATH.read_bytes(),
+                file_name="auditoria_processada.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+        else:
+            st.caption("A planilha `auditoria_processada.xlsx` nao esta presente neste ambiente.")
+
+        source_files = audit_detail.get("source_files", pd.DataFrame())
+        mapping = audit_detail.get("mapping", pd.DataFrame())
+        if not source_files.empty:
+            st.markdown("**Arquivos brutos usados**")
+            st.dataframe(source_files, width="stretch", hide_index=True)
+        else:
+            st.info("Os arquivos brutos usados nao estao disponiveis aqui. Se a planilha de auditoria estiver no deploy, esse bloco aparece automaticamente.")
+
+        if not mapping.empty:
+            st.markdown("**Mapeamento do schema**")
+            st.dataframe(mapping, width="stretch", hide_index=True)
+        else:
+            st.info("O mapeamento campo a campo da origem bruta nao esta disponivel neste ambiente.")
 
 
 def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
@@ -898,13 +1335,15 @@ def main() -> None:
             - `tem_cnpj_valido` usa 14 digitos apos limpeza.
             - `duplicado_aparente` considera igualdade nos campos centrais do schema.
             - O benchmark entre UFs ajuda a distinguir estados puxados por volume, ticket medio ou concentracao.
+            - A aba de auditoria combina sinais calculados direto dos parquets com a planilha `auditoria_processada.xlsx` quando ela estiver presente.
             """
         )
+    render_tab_guide()
     if filtered.empty:
         st.warning("Os filtros atuais nao retornaram registros.")
         return
 
-    tabs = st.tabs(["Panorama", "Temporal", "Territorio", "Entidades", "Qualidade", "Textos", "Benchmark UFs", "Historias"])
+    tabs = st.tabs(["Panorama", "Temporal", "Territorio", "Entidades", "Qualidade", "Auditoria", "Benchmark UFs", "Historias"])
     with tabs[0]:
         render_overview(filtered, data)
     with tabs[1]:
@@ -916,7 +1355,7 @@ def main() -> None:
     with tabs[4]:
         render_quality(filtered)
     with tabs[5]:
-        render_texts(filtered)
+        render_audit(filtered, data, data_dir)
     with tabs[6]:
         render_benchmark(filtered, data)
     with tabs[7]:
