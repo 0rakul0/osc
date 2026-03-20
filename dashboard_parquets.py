@@ -232,7 +232,6 @@ def apply_filters(
     data: pd.DataFrame,
     selected_ufs: list[str],
     year_range: tuple[int, int] | None,
-    selected_months: list[int],
     selected_modalities: list[str],
     minimum_value: float,
     only_valid_cnpj: bool,
@@ -244,8 +243,6 @@ def apply_filters(
         filtered = filtered[filtered["uf"].isin(selected_ufs)]
     if year_range:
         filtered = filtered[filtered["ano_num"].between(year_range[0], year_range[1], inclusive="both")]
-    if selected_months:
-        filtered = filtered[filtered["mes_num"].isin(selected_months)]
     if selected_modalities:
         filtered = filtered[filtered["modalidade_base"].isin(selected_modalities)]
     if minimum_value > 0:
@@ -541,7 +538,7 @@ def render_header(data: pd.DataFrame, files_df: pd.DataFrame, data_dir: str) -> 
     )
 
 
-def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str], tuple[int, int] | None, list[int], list[str], float, bool, bool, str]:
+def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str], tuple[int, int] | None, list[str], float, bool, bool, str]:
     st.sidebar.header("Filtros")
     available_ufs = sorted(data["uf"].dropna().unique().tolist())
     selected_ufs = st.sidebar.multiselect("UFs", available_ufs, default=available_ufs)
@@ -549,8 +546,6 @@ def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str
     year_range = None
     if valid_years:
         year_range = st.sidebar.slider("Faixa de ano", min(valid_years), max(valid_years), (min(valid_years), max(valid_years)))
-    valid_months = sorted(int(v) for v in data.loc[data["mes_valido"], "mes_num"].dropna().unique().tolist())
-    selected_months = st.sidebar.multiselect("Meses", valid_months, default=valid_months)
     modalities = data["modalidade_base"].value_counts().head(25).index.tolist()
     selected_modalities = st.sidebar.multiselect("Modalidades", modalities, default=[])
     minimum_value = st.sidebar.number_input("Valor minimo", min_value=0.0, value=0.0, step=50000.0)
@@ -559,7 +554,7 @@ def render_sidebar(data: pd.DataFrame, files_df: pd.DataFrame) -> tuple[list[str
     search_text = st.sidebar.text_input("Busca textual")
     st.sidebar.divider()
     st.sidebar.caption(f"Arquivos lidos: {format_int(len(files_df))}")
-    return selected_ufs, year_range, selected_months, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text
+    return selected_ufs, year_range, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text
 
 
 def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
@@ -883,12 +878,11 @@ def main() -> None:
         return
 
     render_header(data, files_df, data_dir)
-    selected_ufs, year_range, selected_months, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text = render_sidebar(data, files_df)
+    selected_ufs, year_range, selected_modalities, minimum_value, only_valid_cnpj, exclude_zero_negative, search_text = render_sidebar(data, files_df)
     filtered = apply_filters(
         data,
         selected_ufs,
         year_range,
-        selected_months,
         selected_modalities,
         minimum_value,
         only_valid_cnpj,
