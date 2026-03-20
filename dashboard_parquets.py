@@ -70,6 +70,10 @@ def format_money(value: float | None) -> str:
     return f"R$ {text.replace(',', 'X').replace('.', ',').replace('X', '.')}"
 
 
+def render_inline_explainer(text: str) -> None:
+    st.markdown(f"> **Como ler:** {text}")
+
+
 def clean_text(series: pd.Series) -> pd.Series:
     values = series.astype("string").str.strip()
     lower = values.str.lower()
@@ -742,6 +746,130 @@ def build_executive_narrative_rows(filtered: pd.DataFrame, full_data: pd.DataFra
     return pd.DataFrame(rows)
 
 
+def render_dynamic_executive_summary(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
+    st.markdown("**Resumo Executivo Dinamico**")
+    st.caption("Este bloco traduz o recorte atual em leitura executiva antes da exploracao visual.")
+
+    uf_summary = build_uf_summary(filtered)
+    entity_summary = build_entity_summary(filtered)
+    annual = (
+        filtered.loc[filtered["ano_valido"]]
+        .groupby("ano_num")
+        .agg(valor_total=("valor_num", "sum"), registros=("ano_num", "size"))
+        .reset_index()
+    )
+    instrument_summary = (
+        filtered.groupby("tipo_instrumento", dropna=False)
+        .agg(valor_total=("valor_num", "sum"), registros=("tipo_instrumento", "size"))
+        .reset_index()
+        .sort_values(["valor_total", "registros"], ascending=[False, False])
+    )
+
+    total_valor = float(filtered["valor_num"].sum())
+    top_uf_text = "Sem UF lider no recorte."
+    if not uf_summary.empty and total_valor > 0:
+        top_uf = uf_summary.iloc[0]
+        share = float(top_uf["valor_total"]) / total_valor * 100
+        top_uf_text = (
+            f"`{top_uf['uf']}` lidera o recorte com {format_money(top_uf['valor_total'])}, "
+            f"equivalente a {format_pct(share)} do valor filtrado."
+        )
+
+    top_instrument_text = "Sem classificacao de instrumento disponivel."
+    if not instrument_summary.empty and total_valor > 0:
+        top_instrument = instrument_summary.iloc[0]
+        share = float(top_instrument["valor_total"]) / total_valor * 100
+        top_instrument_text = (
+            f"O tipo dominante e `{top_instrument['tipo_instrumento']}`, com "
+            f"{format_money(top_instrument['valor_total'])} e {format_pct(share)} do valor total."
+        )
+
+    top_entity_text = "Sem entidade lider identificada."
+    if not entity_summary.empty and total_valor > 0:
+        top_entity = entity_summary.iloc[0]
+        share = float(top_entity["valor_total"]) / total_valor * 100
+        top_entity_text = (
+            f"A entidade que mais pesa e `{top_entity['nome_osc']}`, com "
+            f"{format_money(top_entity['valor_total'])} e {format_pct(share)} do total."
+        )
+
+    temporal_text = "Sem leitura temporal valida neste recorte."
+    if not annual.empty:
+        peak = annual.sort_values("valor_total", ascending=False).iloc[0]
+        temporal_text = (
+            f"O pico temporal do recorte esta em `{int(peak['ano_num'])}`, com "
+            f"{format_money(peak['valor_total'])} e {format_int(peak['registros'])} registros."
+        )
+        annual_sorted = annual.sort_values("ano_num")
+        if len(annual_sorted) >= 2:
+            prev = annual_sorted.iloc[-2]
+            curr = annual_sorted.iloc[-1]
+            if prev["valor_total"] and not pd.isna(prev["valor_total"]):
+                variation = ((curr["valor_total"] / prev["valor_total"]) - 1) * 100
+                temporal_text += (
+                    f" Na borda mais recente, `{int(curr['ano_num'])}` ficou em "
+                    f"{format_money(curr['valor_total'])}, variacao de {format_pct(variation)} "
+                    f"contra `{int(prev['ano_num'])}`."
+                )
+
+    cobertura_objeto = filtered["tem_objeto"].mean() * 100 if len(filtered) else 0
+    cobertura_municipio = filtered["tem_municipio"].mean() * 100 if len(filtered) else 0
+    cobertura_modalidade = filtered["tem_modalidade"].mean() * 100 if len(filtered) else 0
+    anos_invalidos = int(((~filtered["ano_valido"]) & filtered["ano"].notna()).sum())
+    valores_negativos = int(filtered["valor_negativo"].sum())
+    duplicados = int(filtered["duplicado_aparente"].sum())
+    quality_text = (
+        f"Cobertura no recorte: objeto {format_pct(cobertura_objeto)}, municipio {format_pct(cobertura_municipio)} "
+        f"e modalidade {format_pct(cobertura_modalidade)}."
+    )
+    alert_parts: list[str] = []
+    if anos_invalidos:
+        alert_parts.append(f"{format_int(anos_invalidos)} anos invalidos")
+    if valores_negativos:
+        alert_parts.append(f"{format_int(valores_negativos)} valores negativos")
+    if duplicados:
+        alert_parts.append(f"{format_int(duplicados)} duplicados aparentes")
+    if alert_parts:
+        quality_text += " Principais alertas: " + ", ".join(alert_parts) + "."
+    else:
+        quality_text += " Nao ha alertas fortes de ano invalido, valor negativo ou duplicidade aparente neste recorte."
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info("**Leitura principal**\n\n" + top_uf_text + "\n\n" + top_instrument_text)
+    with col2:
+        st.success("**Trajetoria**\n\n" + temporal_text)
+    with col3:
+        st.warning("**Confiabilidade**\n\n" + quality_text)
+
+    st.markdown("**Como comecar a leitura**")
+    st.markdown(
+        """
+        1. Leia o resumo executivo acima para entender o que domina o recorte atual.
+        2. Entre em `Panorama` para confirmar volume, tempo e tipo do instrumento.
+        3. Use `Territorio` para localizar a concentracao espacial.
+        4. Use `Entidades` para identificar os principais beneficiarios.
+        5. Feche em `Auditoria` e `Historias` para validar qualidade e interpretar o contexto.
+        """
+    )
+
+
+def render_glossary() -> None:
+    with st.expander("Glossario rapido"):
+        st.markdown(
+            """
+            - `Recorte atual`: tudo o que sobrou depois dos filtros globais da lateral.
+            - `Ticket medio`: valor medio por registro no recorte.
+            - `Mediana`: valor central da distribuicao, menos sensivel a outliers.
+            - `Valor total`: soma de `valor_num`, derivado de `valor_total`.
+            - `Ano valido`: ano que passou pela validacao numerica do dashboard.
+            - `Duplicado aparente`: registros iguais nos campos centrais do schema; e um sinal de revisao, nao uma prova definitiva de duplicidade.
+            - `Tipo do instrumento`: classificacao heuristica baseada em `modalidade` e `objeto`, usada para separar convenios, termos, transferencias e contratacoes.
+            - `Cobertura`: percentual de registros com um campo efetivamente preenchido.
+            """
+        )
+
+
 def render_header(data: pd.DataFrame, files_df: pd.DataFrame, data_dir: str) -> None:
     last_update = files_df["atualizado_em"].max() if not files_df.empty else None
     updated_text = last_update.strftime("%d/%m/%Y %H:%M") if pd.notna(last_update) else "n/d"
@@ -823,6 +951,18 @@ def render_tab_guide() -> None:
 
 def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_base: pd.DataFrame) -> None:
     st.subheader("Panorama")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Cards do topo**: mostram o tamanho do recorte atual, com volume, valor, ticket e quantidade de entidades.
+        2. **Janela comparativa do panorama**: define se os comparativos abaixo olham o recorte atual, um ano isolado ou um acumulado de anos.
+        3. **Valor total por UF**: responde quais estados mais pesam financeiramente dentro da janela escolhida.
+        4. **Distribuicao dos valores**: mostra se a base e puxada por muitos registros pequenos ou por poucos registros muito grandes.
+        5. **Tendencia temporal**: mostra como o volume evolui ao longo do tempo e onde ha mudancas de ritmo.
+        6. **Leitura por tipo do instrumento**: mostra se o resultado vem mais de convenios, termos, transferencias ou contratacoes.
+        7. **Tabela final**: serve para conferir os numeros consolidados por UF sem depender so da leitura visual.
+        """
+    )
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Registros", format_int(len(filtered)))
     col2.metric("Valor total", format_money(filtered["valor_num"].sum()))
@@ -833,7 +973,7 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
 
     valid_years = sorted(int(year) for year in overview_base.loc[overview_base["ano_valido"], "ano_num"].dropna().unique().tolist())
     st.markdown("**Janela temporal do panorama**")
-    st.caption("Esses controles alteram apenas os comparativos do Panorama. Os cards acima continuam refletindo o recorte global atual.")
+    render_inline_explainer("Use esta etapa para decidir se os comparativos vao olhar um ano especifico, um acumulado de anos ou simplesmente manter o recorte global atual.")
 
     overview_mode = st.radio(
         "Modo de comparacao do panorama",
@@ -872,6 +1012,8 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
         st.info("A barra temporal do panorama aparece nos modos `Faixa acumulada` e `Ano isolado`.")
 
     summary = build_uf_summary(comparison_source)
+    st.markdown("**Comparacao entre UFs**")
+    render_inline_explainer("Aqui a pergunta principal e: quais estados concentram mais valor dentro da janela escolhida?")
     left, right = st.columns([1.2, 0.8])
     with left:
         fig = px.bar(
@@ -895,9 +1037,13 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
             fig.update_layout(height=440, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig, width="stretch")
 
+    st.markdown("**Distribuicao dos valores**")
+    render_inline_explainer("Este histograma mostra se a base e dominada por poucos contratos muito altos ou por uma massa mais distribuida de registros.")
+
     render_temporal_analysis(filtered)
 
     st.markdown("**Leitura por tipo do instrumento**")
+    render_inline_explainer("Nesta etapa, a pergunta muda de `quanto` para `como`: que tipo de instrumento esta puxando o resultado financeiro?")
     instrument_summary = (
         comparison_source.groupby("tipo_instrumento", dropna=False)
         .agg(registros=("tipo_instrumento", "size"), valor_total=("valor_num", "sum"))
@@ -936,6 +1082,8 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
     st.dataframe(instrument_display, width="stretch", hide_index=True)
 
     display = summary.copy()
+    st.markdown("**Tabela de conferência por UF**")
+    render_inline_explainer("Use esta tabela para validar os totais e coberturas por UF sem depender apenas dos graficos.")
     for column in ["valor_total", "ticket_medio", "ticket_mediano"]:
         display[column] = display[column].map(format_money)
     for column in ["cobertura_cnpj", "cobertura_municipio", "cobertura_objeto", "cobertura_modalidade"]:
@@ -949,6 +1097,7 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_ba
 
 def render_temporal_analysis(filtered: pd.DataFrame) -> None:
     st.markdown("**Tendencia temporal**")
+    render_inline_explainer("Aqui voce observa ritmo, inflexoes e picos ao longo do tempo no recorte atual.")
     annual = (
         filtered.loc[filtered["ano_valido"]]
         .groupby("ano_num")
@@ -958,7 +1107,7 @@ def render_temporal_analysis(filtered: pd.DataFrame) -> None:
     if annual.empty:
         st.info("Nao ha anos validos no recorte atual para a leitura temporal.")
         return
-    st.caption("Esta secao mostra a tendencia temporal do recorte global atual.")
+    render_inline_explainer("Esta secao mostra a tendencia temporal do recorte global atual.")
     metric = st.radio("Metrica temporal", ["Valor total", "Registros", "Ticket medio"], horizontal=True, key="temporal_metric")
     y_map = {"Valor total": "valor_total", "Registros": "registros", "Ticket medio": "ticket_medio"}
     left, right = st.columns([1.1, 0.9])
@@ -984,6 +1133,7 @@ def render_temporal_analysis(filtered: pd.DataFrame) -> None:
     )
     if not instrument_year.empty:
         st.markdown("**Evolucao por tipo do instrumento**")
+        render_inline_explainer("Este bloco mostra se a mudanca no tempo veio de convenios, termos, transferencias ou contratacoes.")
         instrument_metric = st.radio(
             "Leitura por tipo",
             ["Valor total por tipo", "Registros por tipo"],
@@ -1002,7 +1152,7 @@ def render_temporal_analysis(filtered: pd.DataFrame) -> None:
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("**Corte anual por UF**")
-    st.caption("Este grafico soma `valor_num` por UF no ano escolhido. Ele e o formato mais seguro para comparar estados em um ano especifico.")
+    render_inline_explainer("Este e o corte mais auditavel para comparar estados em um ano especifico: filtra o ano, soma `valor_num` por UF e ordena pelo total.")
 
     available_years = sorted(int(year) for year in annual["ano_num"].dropna().unique().tolist())
     default_year = available_years[-1]
@@ -1084,12 +1234,21 @@ def render_temporal_analysis(filtered: pd.DataFrame) -> None:
 
 def render_territory(filtered: pd.DataFrame) -> None:
     st.subheader("Territorio")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Top municipios por valor**: mostra onde o recurso se concentra territorialmente.
+        2. **Treemap territorial**: ajuda a perceber peso relativo entre UFs e municipios ao mesmo tempo.
+        3. **Leitura correta**: primeiro identifique os municipios lideres; depois veja se a concentracao fica espalhada por varias cidades ou muito presa a poucos polos.
+        """
+    )
     geo = (
         filtered.groupby(["uf", "municipio_base"], dropna=False)
         .agg(registros=("municipio_base", "size"), valor_total=("valor_num", "sum"))
         .reset_index()
         .sort_values(["valor_total", "registros"], ascending=[False, False])
     )
+    st.caption("A pergunta central aqui e territorial: em que lugares o recurso realmente esta pousando?")
     left, right = st.columns([1.1, 0.9])
     with left:
         fig = px.bar(geo.head(25).sort_values("valor_total"), x="valor_total", y="municipio_base", orientation="h", color="uf", title="Top municipios por valor")
@@ -1103,10 +1262,19 @@ def render_territory(filtered: pd.DataFrame) -> None:
 
 def render_entities(filtered: pd.DataFrame) -> None:
     st.subheader("Entidades")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Top entidades por valor**: mostra quem concentra mais recursos.
+        2. **Top entidades por quantidade de registros**: mostra quem aparece mais vezes, mesmo sem liderar em valor.
+        3. **Tabela detalhada**: serve para validar ticket medio, cobertura territorial e horizonte temporal de cada entidade.
+        """
+    )
     entities = build_entity_summary(filtered)
     if entities.empty:
         st.info("Sem entidades para o recorte.")
         return
+    st.caption("A pergunta principal aqui e institucional: quem recebe mais e quem aparece com mais recorrencia?")
     left, right = st.columns(2)
     with left:
         fig = px.bar(entities.head(20).sort_values("valor_total"), x="valor_total", y="identificador", orientation="h", title="Top entidades por valor", color="valor_total", color_continuous_scale=["#ffd6a5", "#9a031e"])
@@ -1125,6 +1293,15 @@ def render_entities(filtered: pd.DataFrame) -> None:
 
 def render_quality(filtered: pd.DataFrame) -> None:
     st.subheader("Qualidade")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Heatmap de vazio por campo e UF**: mostra onde faltam dados estruturais.
+        2. **Alertas de qualidade**: resume problemas concretos como ano invalido, valor negativo, ausencia de municipio e duplicidade aparente.
+        3. **Leitura correta**: primeiro veja quais campos faltam; depois olhe quais alertas podem afetar mais a confiabilidade da analise.
+        """
+    )
+    st.caption("Aqui a pergunta nao e financeira, e sim de confiabilidade: o quanto da base esta bem preenchido e o que pode distorcer a leitura?")
     left, right = st.columns([1.05, 0.95])
     with left:
         missing = (
@@ -1160,6 +1337,15 @@ def render_quality(filtered: pd.DataFrame) -> None:
 
 def render_audit(filtered: pd.DataFrame, full_data: pd.DataFrame, data_dir: str) -> None:
     st.subheader("Auditoria")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Painel**: prioriza UFs com maior risco operacional ou estrutural.
+        2. **Qualidade**: aprofunda cobertura de campos e alertas de consistencia.
+        3. **Benchmark UFs**: compara os estados para entender se o peso vem de volume, ticket medio ou concentracao.
+        4. **Detalhe por UF**: aprofunda uma unidade especifica com sinais, anos suspeitos e trilha de origem.
+        """
+    )
     subsection = st.radio(
         "Subsecao de auditoria",
         ["Painel", "Qualidade", "Benchmark UFs"],
@@ -1401,6 +1587,16 @@ def render_audit(filtered: pd.DataFrame, full_data: pd.DataFrame, data_dir: str)
 
 def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
     st.subheader("Benchmark entre estados")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Leitura guiada**: resume rapidamente o que diferencia SP, AM e o padrao geral das UFs.
+        2. **Dispersao volume x ticket x concentracao**: separa estados grandes por massa de registros daqueles grandes por contratos altos.
+        3. **Peso relativo das UFs**: mostra quem ocupa mais espaco no conjunto nacional.
+        4. **Tabela final**: consolida ranks e indicadores para conferencia.
+        """
+    )
+    st.caption("A pergunta central aqui e comparativa: por que um estado aparece grande? Por volume, por ticket medio ou por concentracao?")
     benchmark = build_state_benchmark(full_data)
     current = build_state_benchmark(filtered)
     if benchmark.empty:
@@ -1472,6 +1668,14 @@ def render_benchmark(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
 
 def render_histories() -> None:
     st.subheader("Historias")
+    st.markdown("**Como ler esta secao**")
+    st.markdown(
+        """
+        1. **Modo corrido**: funciona como uma wiki sequencial para ler varias UFs em ordem.
+        2. **Selecionar UF**: serve para mergulhar em um estado especifico.
+        3. **Leitura correta**: use esta aba depois da analise quantitativa, para transformar numeros em interpretacao narrativa com contexto e fontes.
+        """
+    )
     docs = load_history_documents(str(HISTORY_DIR))
     if not docs:
         st.warning("Nenhum markdown foi encontrado em `historia/`. Rode `python gerar_historias.py` para gerar as narrativas.")
@@ -1593,6 +1797,8 @@ def main() -> None:
     if filtered.empty:
         st.warning("Os filtros atuais nao retornaram registros.")
         return
+    render_dynamic_executive_summary(filtered, data)
+    render_glossary()
 
     sections = ["Panorama", "Territorio", "Entidades", "Auditoria", "Historias"]
     selected_section = st.radio("Secao", sections, horizontal=True, label_visibility="collapsed")
