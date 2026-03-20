@@ -824,7 +824,7 @@ def render_tab_guide() -> None:
         )
 
 
-def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
+def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame, overview_base: pd.DataFrame) -> None:
     st.subheader("Panorama")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Registros", format_int(len(filtered)))
@@ -834,7 +834,43 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
     col5.metric("Entidades", format_int(filtered["nome_osc"].dropna().nunique()))
     col6.metric("CNPJs validos", format_int(filtered.loc[filtered["tem_cnpj_valido"], "cnpj"].dropna().nunique()))
 
-    summary = build_uf_summary(filtered)
+    valid_years = sorted(int(year) for year in overview_base.loc[overview_base["ano_valido"], "ano_num"].dropna().unique().tolist())
+    mode_col1, mode_col2 = st.columns([0.38, 0.62])
+    with mode_col1:
+        overview_mode = st.radio(
+            "Janela temporal do panorama",
+            ["Recorte atual", "Ano isolado", "Faixa acumulada"],
+            horizontal=True,
+            key="overview_time_mode",
+        )
+
+    comparison_source = filtered
+    comparison_label = "recorte atual"
+
+    with mode_col2:
+        if overview_mode == "Ano isolado" and valid_years:
+            selected_year = st.selectbox(
+                "Ano do panorama",
+                valid_years,
+                index=len(valid_years) - 1,
+                key="overview_single_year",
+            )
+            comparison_source = overview_base.loc[overview_base["ano_num"].eq(selected_year)].copy()
+            comparison_label = f"ano {selected_year}"
+        elif overview_mode == "Faixa acumulada" and valid_years:
+            selected_range = st.slider(
+                "Faixa acumulada do panorama",
+                min_value=min(valid_years),
+                max_value=max(valid_years),
+                value=(min(valid_years), max(valid_years)),
+                key="overview_year_range",
+            )
+            comparison_source = overview_base.loc[
+                overview_base["ano_num"].between(selected_range[0], selected_range[1], inclusive="both")
+            ].copy()
+            comparison_label = f"acumulado de {selected_range[0]} a {selected_range[1]}"
+
+    summary = build_uf_summary(comparison_source)
     left, right = st.columns([1.2, 0.8])
     with left:
         fig = px.bar(
@@ -842,7 +878,7 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
             x="valor_total",
             y="uf",
             orientation="h",
-            title="Valor total por UF",
+            title=f"Valor total por UF ({comparison_label})",
             color="valor_total",
             color_continuous_scale=["#d8f3dc", "#0f4c5c"],
         )
@@ -860,7 +896,7 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
 
     st.markdown("**Leitura por tipo do instrumento**")
     instrument_summary = (
-        filtered.groupby("tipo_instrumento", dropna=False)
+        comparison_source.groupby("tipo_instrumento", dropna=False)
         .agg(registros=("tipo_instrumento", "size"), valor_total=("valor_num", "sum"))
         .reset_index()
         .sort_values(["valor_total", "registros"], ascending=[False, False])
@@ -902,7 +938,10 @@ def render_overview(filtered: pd.DataFrame, full_data: pd.DataFrame) -> None:
     for column in ["cobertura_cnpj", "cobertura_municipio", "cobertura_objeto", "cobertura_modalidade"]:
         display[column] = display[column].map(format_pct)
     st.dataframe(display, width="stretch", hide_index=True)
-    st.caption(f"O recorte atual representa {format_pct(len(filtered) / max(len(full_data), 1) * 100)} da base carregada.")
+    st.caption(
+        f"O recorte atual representa {format_pct(len(filtered) / max(len(full_data), 1) * 100)} da base carregada. "
+        f"Os graficos comparativos acima estao mostrando `{comparison_label}`."
+    )
 
 
 def render_temporal(filtered: pd.DataFrame) -> None:
@@ -1523,6 +1562,17 @@ def main() -> None:
         exclude_zero_negative,
         search_text,
     )
+    filtered_without_year = apply_filters(
+        data,
+        selected_ufs,
+        None,
+        selected_modalities,
+        selected_instrument_types,
+        minimum_value,
+        only_valid_cnpj,
+        exclude_zero_negative,
+        search_text,
+    )
     st.caption("O dashboard cruza volume, temporalidade, concentracao, cobertura e benchmarking entre UFs a partir dos parquets consolidados.")
     with st.expander("Premissas de leitura"):
         st.markdown(
@@ -1544,7 +1594,7 @@ def main() -> None:
     selected_section = st.radio("Secao", sections, horizontal=True, label_visibility="collapsed")
 
     if selected_section == "Panorama":
-        render_overview(filtered, data)
+        render_overview(filtered, data, filtered_without_year)
     elif selected_section == "Temporal":
         render_temporal(filtered)
     elif selected_section == "Territorio":
